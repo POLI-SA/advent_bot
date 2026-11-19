@@ -103,6 +103,48 @@ async def process_subscribe(callback: CallbackQuery):
         parse_mode="HTML"
     )
 
+
+from aiogram.filters import Command
+
+# --- ТЕСТОВАЯ КОМАНДА ДЛЯ ПРОВЕРКИ РАССЫЛКИ ---
+@dp.message(Command("test"))
+async def test_reminder(message: Message):
+    # Проверяем, что команду вызвал именно ты (замени 123456789 на свой ID)
+    ADMIN_ID = 123456789 
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    await message.answer("⏳ Запускаю тестовую рассылку...")
+    
+    users = get_subscribed_users()
+    count = 0
+    for user_id in users:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text="🎄 <b>Тестовое напоминание!</b>\n\nВсё работает отлично. Жди настоящее напоминание в 8:00.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]]
+                ),
+                parse_mode="HTML"
+            )
+            count += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            
+    await message.answer(f"✅ Рассылка завершена. Отправлено: {count} чел.")
+
+
+
+
+
+
+
+
+
+
+
 # --- РАССЫЛКА НАПОМИНАНИЙ ---
 async def daily_reminder():
     while True:

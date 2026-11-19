@@ -110,7 +110,7 @@ from aiogram.filters import Command
 @dp.message(Command("test"))
 async def test_reminder(message: Message):
     # Проверяем, что команду вызвал именно ты (замени 123456789 на свой ID)
-    ADMIN_ID = 123456789 
+    ADMIN_ID = 7684212166 
     if message.from_user.id != ADMIN_ID:
         return
         

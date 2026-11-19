@@ -1,70 +1,145 @@
 import asyncio
 import os
+import sqlite3
 from datetime import datetime, timedelta
 from aiohttp import web
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
 from aiogram.filters import CommandStart
+from aiogram.exceptions import TelegramForbiddenError
 
-# 1. ВСТАВЬТЕ ВАШ ТОКЕН ИЗ BOTFATHER
+# --- НАСТРОЙКИ ---
 BOT_TOKEN = "9285771934:AAF35GN7b0UAxN24KNTC6ZZX7SuQpcp4CJQ"
-# 2. ВАША ССЫЛКА НА GITHUB PAGES
 WEB_APP_URL = "https://poli-sa.github.io/advent-calendar/"
-# 3. ВАШ ID ЧАТА (ГРУППЫ ИЛИ ЛИЧНЫЙ)
-CHAT_ID = "ВАШ_CHAT_ID_ЗДЕСЬ"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- ОБРАБОТКА КОМАНДЫ /start ---
+# --- БАЗА ДАННЫХ ---
+# Для тестов можно оставить "users.db". На Render файл будет стираться при перезапуске,
+# но пока сервер работает, данные сохраняются.
+DB_PATH = "users.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Добавляем колонку subscribed (1 - согласен на рассылку, 0 - нет)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            subscribed INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def subscribe_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO users (user_id, subscribed) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET subscribed=1",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
+def get_subscribed_users():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE subscribed = 1")
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+# --- ОБРАБОТКА /start ---
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
+    # Просто сохраняем пользователя, но пока не подписываем
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, first_name) VALUES (?, ?)", 
+                   (message.from_user.id, message.from_user.first_name))
+    conn.commit()
+    conn.close()
+
+    # Кнопки: одна открывает календарь, вторая подписывает на напоминания
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Открыть Адвент-календарь", web_app=WebAppInfo(url=WEB_APP_URL))]
+            [InlineKeyboardButton(text="🎁 Открыть Адвент-календарь", web_app=WebAppInfo(url=WEB_APP_URL))],
+            [InlineKeyboardButton(text="🔔 Включить напоминания", callback_data="subscribe")]
         ]
     )
+    
     await message.answer(
-        "🎄 <b>Привет!</b>\n\nДобро пожаловать в наш новогодний адвент-календарь.\n"
+        "🎄 <b>Привет!</b>\n\n"
+        "Добро пожаловать в наш новогодний адвент-календарь.\n"
         "Каждый день открывай новое окошко с подарком!\n\n"
-        "Нажми на кнопку ниже, чтобы начать:",
+        "👇 Нажми на кнопку ниже, чтобы начать.\n"
+        "👇 А если хочешь получать напоминания каждое утро — нажми «Включить напоминания».",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
 
-# --- ФУНКЦИЯ ДЛЯ ЕЖЕДНЕВНОГО НАПОМИНАНИЯ ---
+# --- ОБРАБОТКА КНОПКИ "ВКЛЮЧИТЬ НАПОМИНАНИЯ" ---
+@dp.callback_query(F.data == "subscribe")
+async def process_subscribe(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    subscribe_user(user_id)
+    
+    # Отвечаем на нажатие кнопки (убираем "часики" в интерфейсе)
+    await callback.answer("Вы подписались на напоминания! 🔔")
+    
+    # Меняем сообщение, чтобы показать, что подписка активна
+    await callback.message.edit_text(
+        "🎄 <b>Привет!</b>\n\n"
+        "Добро пожаловать в наш новогодний адвент-календарь.\n"
+        "Каждый день открывай новое окошко с подарком!\n\n"
+        "✅ <b>Напоминания включены!</b> Бот будет присылать вам сообщение каждое утро в 08:00.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 Открыть Адвент-календарь", web_app=WebAppInfo(url=WEB_APP_URL))]
+            ]
+        ),
+        parse_mode="HTML"
+    )
+
+# --- РАССЫЛКА НАПОМИНАНИЙ ---
 async def daily_reminder():
     while True:
         now = datetime.now()
-        # ЗАДАЙТЕ ВРЕМЯ ОТПРАВКИ (например, 08:00 утра)
+        # Время рассылки (например, 08:00 утра)
         target_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
-        
         if now > target_time:
             target_time += timedelta(days=1)
         
         wait_seconds = (target_time - now).total_seconds()
-        print(f"Следующее напоминание через {wait_seconds} секунд (в {target_time})")
-        
+        print(f"Ждём {wait_seconds} секунд до рассылки...")
         await asyncio.sleep(wait_seconds)
         
-        try:
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text="🎄 <b>Доброе утро!</b>\n\nНе забудьте открыть новое окошко в нашем адвент-календаре!\n👇",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(text="Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]
-                    ]
-                ),
-                parse_mode="HTML"
-            )
-            print("Напоминание отправлено!")
-        except Exception as e:
-            print(f"Ошибка отправки: {e}")
+        # Получаем только тех, кто нажал кнопку "Включить напоминания"
+        users = get_subscribed_users()
+        print(f"Начинаем рассылку для {len(users)} пользователей...")
         
+        for user_id in users:
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="🎄 <b>Доброе утро!</b>\n\nНе забудь открыть новое окошко в адвент-календаре!",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]]
+                    ),
+                    parse_mode="HTML"
+                )
+                await asyncio.sleep(0.05) # Задержка от лимитов
+            except TelegramForbiddenError:
+                print(f"Пользователь {user_id} заблокировал бота.")
+            except Exception as e:
+                print(f"Ошибка отправки {user_id}: {e}")
+                
         await asyncio.sleep(60)
 
-# --- ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы деплой не падал) ---
+# --- ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running")
 
@@ -80,13 +155,10 @@ async def start_web_server():
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 async def main():
-    # Запускаем веб-сервер для Render
+    init_db()
     asyncio.create_task(start_web_server())
-    
-    # Запускаем фоновую задачу для напоминаний
     asyncio.create_task(daily_reminder())
-    
-    print("Bot and web server are running...")
+    print("Bot is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

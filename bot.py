@@ -1,6 +1,8 @@
 import asyncio
 import os
 import sqlite3
+import signal
+import sys
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -9,21 +11,22 @@ from aiogram.filters import CommandStart
 from aiogram.exceptions import TelegramForbiddenError
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9285771934:AAF35GN7b0UAxN24KNTC6ZZX7SuQpcp4CJQ"
-WEB_APP_URL = "https://poli-sa.github.io/advent-calendar/"
+# ВСТАВЬТЕ НОВЫЙ ТОКЕН (СГЕНЕРИРУЙТЕ ЕГО В BOTFATHER!)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://poli-sa.github.io/advent-calendar/")
+
+if not BOT_TOKEN:
+    raise ValueError("Не задан BOT_TOKEN! Добавьте его в переменные окружения Render.")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # --- БАЗА ДАННЫХ ---
-# Для тестов можно оставить "users.db". На Render файл будет стираться при перезапуске,
-# но пока сервер работает, данные сохраняются.
 DB_PATH = "users.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Добавляем колонку subscribed (1 - согласен на рассылку, 0 - нет)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -55,7 +58,6 @@ def get_subscribed_users():
 # --- ОБРАБОТКА /start ---
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
-    # Просто сохраняем пользователя, но пока не подписываем
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, first_name) VALUES (?, ?)", 
@@ -63,7 +65,6 @@ async def start_cmd(message: Message):
     conn.commit()
     conn.close()
 
-    # Кнопки: одна открывает календарь, вторая подписывает на напоминания
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎁 Открыть Адвент-календарь", web_app=WebAppInfo(url=WEB_APP_URL))],
@@ -87,10 +88,8 @@ async def process_subscribe(callback: CallbackQuery):
     user_id = callback.from_user.id
     subscribe_user(user_id)
     
-    # Отвечаем на нажатие кнопки (убираем "часики" в интерфейсе)
     await callback.answer("Вы подписались на напоминания! 🔔")
     
-    # Меняем сообщение, чтобы показать, что подписка активна
     await callback.message.edit_text(
         "🎄 <b>Привет!</b>\n\n"
         "Добро пожаловать в наш новогодний адвент-календарь.\n"
@@ -108,7 +107,6 @@ async def process_subscribe(callback: CallbackQuery):
 async def daily_reminder():
     while True:
         now = datetime.now()
-        # Время рассылки (например, 08:00 утра)
         target_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
         if now > target_time:
             target_time += timedelta(days=1)
@@ -117,7 +115,6 @@ async def daily_reminder():
         print(f"Ждём {wait_seconds} секунд до рассылки...")
         await asyncio.sleep(wait_seconds)
         
-        # Получаем только тех, кто нажал кнопку "Включить напоминания"
         users = get_subscribed_users()
         print(f"Начинаем рассылку для {len(users)} пользователей...")
         
@@ -131,7 +128,7 @@ async def daily_reminder():
                     ),
                     parse_mode="HTML"
                 )
-                await asyncio.sleep(0.05) # Задержка от лимитов
+                await asyncio.sleep(0.05)
             except TelegramForbiddenError:
                 print(f"Пользователь {user_id} заблокировал бота.")
             except Exception as e:
@@ -153,11 +150,27 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {port}")
 
+# --- КОРРЕКТНОЕ ЗАВЕРШЕНИЕ РАБОТЫ ---
+async def on_shutdown():
+    print("Получен сигнал завершения, закрываем сессию бота...")
+    await bot.session.close()
+    sys.exit(0)
+
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 async def main():
     init_db()
+    
+    # ВАЖНО: Очищаем возможные "висящие" соединения перед стартом
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Настройка обработки сигналов (чтобы Render мог корректно выключить бота)
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(on_shutdown()))
+    
     asyncio.create_task(start_web_server())
     asyncio.create_task(daily_reminder())
+    
     print("Bot is running...")
     await dp.start_polling(bot)
 

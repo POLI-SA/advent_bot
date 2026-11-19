@@ -6,20 +6,22 @@ import sys
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery
-from aiogram.filters import CommandStart
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, CallbackQuery, BotCommand
+from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramForbiddenError
 
 # --- НАСТРОЙКИ ---
-# ВСТАВЬТЕ НОВЫЙ ТОКЕН (СГЕНЕРИРУЙТЕ ЕГО В BOTFATHER!)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://poli-sa.github.io/advent-calendar/")
 
 if not BOT_TOKEN:
-    raise ValueError("Не задан BOT_TOKEN! Добавьте его в переменные окружения Render.")
+    raise ValueError("Не задан BOT_TOKEN!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ВАШ ID (для админских команд)
+ADMIN_ID = 7684212166  # ЗАМЕНИТЕ НА ВАШ ID!
 
 # --- БАЗА ДАННЫХ ---
 DB_PATH = "users.db"
@@ -55,6 +57,14 @@ def get_subscribed_users():
     conn.close()
     return users
 
+# --- УСТАНОВКА МЕНЮ КОМАНД ---
+async def set_commands():
+    commands = [
+        BotCommand(command="start", description="🎄 Главное меню"),
+        BotCommand(command="days", description="⏳ Сколько дней до Нового года"),
+    ]
+    await bot.set_my_commands(commands)
+
 # --- ОБРАБОТКА /start ---
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
@@ -68,7 +78,8 @@ async def start_cmd(message: Message):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎁 Открыть Адвент-календарь", web_app=WebAppInfo(url=WEB_APP_URL))],
-            [InlineKeyboardButton(text="🔔 Включить напоминания", callback_data="subscribe")]
+            [InlineKeyboardButton(text="🔔 Включить напоминания", callback_data="subscribe")],
+            [InlineKeyboardButton(text="⏳ Сколько дней до НГ?", callback_data="days_left")]
         ]
     )
     
@@ -76,8 +87,7 @@ async def start_cmd(message: Message):
         "🎄 <b>Привет!</b>\n\n"
         "Добро пожаловать в наш новогодний адвент-календарь.\n"
         "Каждый день открывай новое окошко с подарком!\n\n"
-        "👇 Нажми на кнопку ниже, чтобы начать.\n"
-        "👇 А если хочешь получать напоминания каждое утро — нажми «Включить напоминания».",
+        "👇 Нажми на кнопку ниже, чтобы начать.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -92,8 +102,7 @@ async def process_subscribe(callback: CallbackQuery):
     
     await callback.message.edit_text(
         "🎄 <b>Привет!</b>\n\n"
-        "Добро пожаловать в наш новогодний адвент-календарь.\n"
-        "Каждый день открывай новое окошко с подарком!\n\n"
+        "Добро пожаловать в наш новогодний адвент-календарь.\n\n"
         "✅ <b>Напоминания включены!</b> Бот будет присылать вам сообщение каждое утро в 08:00.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -103,52 +112,93 @@ async def process_subscribe(callback: CallbackQuery):
         parse_mode="HTML"
     )
 
+# --- КОМАНДА "СКОЛЬКО ДНЕЙ ДО НОВОГО ГОДА" ---
+@dp.message(Command("days"))
+async def days_cmd(message: Message):
+    now = datetime.now()
+    next_year = now.year + 1 if now.month == 12 and now.day >= 31 else now.year
+    new_year = datetime(next_year, 1, 1)
+    
+    delta = new_year - now
+    days_left = delta.days
+    
+    await message.answer(
+        f"⏳ До Нового года осталось: <b>{days_left} дней</b>!\n\n"
+        "🎅 А пока не забудь открыть сегодняшнее окошко в календаре!",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]
+            ]
+        ),
+        parse_mode="HTML"
+    )
 
+# --- ТАКЖЕ ДОБАВИМ КНОПКУ ИЗ CALLBACK ДЛЯ "ДНЕЙ" ---
+@dp.callback_query(F.data == "days_left")
+async def days_callback(callback: CallbackQuery):
+    await callback.answer()
+    now = datetime.now()
+    next_year = now.year + 1 if now.month == 12 and now.day >= 31 else now.year
+    new_year = datetime(next_year, 1, 1)
+    days_left = (new_year - now).days
+    
+    await callback.message.answer(
+        f"⏳ До Нового года осталось: <b>{days_left} дней</b>!",
+        parse_mode="HTML"
+    )
 
+# --- ТЕСТОВАЯ КОМАНДА ---
+@dp.message(Command("test"))
+async def test_reminder(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("⏳ Запускаю тестовую рассылку...")
+    users = get_subscribed_users()
+    count = 0
+    for user_id in users:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text="🎄 <b>Тестовое напоминание!</b>",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]]),
+                parse_mode="HTML"
+            )
+            count += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            print(f"Ошибка: {e}")
+    await message.answer(f"✅ Отправлено: {count} чел.")
 
-from aiogram.filters import Command
-
-# --- КОМАНДА ДЛЯ ПРОСМОТРА БАЗЫ ---
+# --- ПРОСМОТР БАЗЫ ---
 @dp.message(Command("users"))
 async def show_users(message: Message):
-    # Замените 123456789 на ваш реальный ID
-    ADMIN_ID = 7684212166 
     if message.from_user.id != ADMIN_ID:
-        return  # Если пишет не админ — игнорируем
-
+        return
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Берем всех, кто подписан
     cursor.execute("SELECT user_id, first_name, subscribed FROM users")
     all_users = cursor.fetchall()
     conn.close()
-
     if not all_users:
-        await message.answer("База пуста. Никто еще не запускал бота.")
+        await message.answer("База пуста.")
         return
-
-    text = "📊 <b>Статистика базы:</b>\n\n"
+    text = "📊 <b>База:</b>\n\n"
     count_sub = 0
-    
     for u in all_users:
         user_id, first_name, subscribed = u
-        status = "✅ Подписан" if subscribed == 1 else "❌ Не подписан"
-        if subscribed == 1:
-            count_sub += 1
-        text += f"• {first_name} (ID: <code>{user_id}</code>) — {status}\n"
-
-    text += f"\n<b>Всего в базе:</b> {len(all_users)}\n"
-    text += f"<b>Из них подписаны на рассылку:</b> {count_sub}"
-    
+        status = "✅" if subscribed == 1 else "❌"
+        if subscribed == 1: count_sub += 1
+        text += f"• {first_name} (ID: <code>{user_id}</code>) {status}\n"
+    text += f"\n<b>Всего:</b> {len(all_users)} | <b>Подписаны:</b> {count_sub}"
     await message.answer(text, parse_mode="HTML")
 
-
-
-
-
-
-# --- РАССЫЛКА НАПОМИНАНИЙ ---
+# --- ЕЖЕДНЕВНЫЕ И ПРАЗДНИЧНЫЕ РАССЫЛКИ ---
 async def daily_reminder():
+    # Флаги, чтобы праздничные сообщения не отправлялись дважды в день
+    sent_dec25 = False
+    sent_ny = False
+    sent_jan1_end = False
+
     while True:
         now = datetime.now()
         target_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -156,31 +206,56 @@ async def daily_reminder():
             target_time += timedelta(days=1)
         
         wait_seconds = (target_time - now).total_seconds()
-        print(f"Ждём {wait_seconds} секунд до рассылки...")
+        print(f"Ждём {wait_seconds} секунд...")
         await asyncio.sleep(wait_seconds)
         
+        # Сбрасываем флаги при смене дня
+        if now.hour == 0 and now.minute < 10:
+            sent_dec25 = False
+            sent_ny = False
+            sent_jan1_end = False
+
         users = get_subscribed_users()
-        print(f"Начинаем рассылку для {len(users)} пользователей...")
+        if not users:
+            continue
+
+        current_date = datetime.now()
+        text_to_send = ""
+        button_text = "Открыть календарь"
         
+        # Логика праздничных сообщений
+        if current_date.month == 12 and current_date.day == 25 and not sent_dec25:
+            text_to_send = "🎄 <b>С Рождеством!</b>\n\nПусть этот день будет наполнен теплом, уютом и волшебством. Открывай скорее окошко!"
+            sent_dec25 = True
+        elif current_date.month == 12 and current_date.day == 31 and not sent_ny:
+            text_to_send = "🥂 <b>С наступающим Новым годом!</b>\n\nПусть следующий год принесёт только радость и счастье! Успей открыть последнее окошко!"
+            sent_ny = True
+        elif current_date.month == 1 and current_date.day == 1 and not sent_jan1_end:
+            text_to_send = "🎉 <b>С Новым годом!</b>\n\nПусть этот год будет лучше предыдущего! Спасибо, что был с нами. До встречи в следующем году!"
+            button_text = "Закрыть календарь"
+            sent_jan1_end = True
+        else:
+            text_to_send = "🎄 <b>Доброе утро!</b>\n\nНе забудь открыть новое окошко в адвент-календаре!"
+
         for user_id in users:
             try:
                 await bot.send_message(
                     chat_id=user_id,
-                    text="🎄 <b>Доброе утро!</b>\n\nНе забудь открыть новое окошко в адвент-календаре!",
+                    text=text_to_send,
                     reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[[InlineKeyboardButton(text="Открыть календарь", web_app=WebAppInfo(url=WEB_APP_URL))]]
+                        inline_keyboard=[[InlineKeyboardButton(text=button_text, web_app=WebAppInfo(url=WEB_APP_URL))]]
                     ),
                     parse_mode="HTML"
                 )
                 await asyncio.sleep(0.05)
             except TelegramForbiddenError:
-                print(f"Пользователь {user_id} заблокировал бота.")
+                pass
             except Exception as e:
                 print(f"Ошибка отправки {user_id}: {e}")
                 
         await asyncio.sleep(60)
 
-# --- ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- ВЕБ-СЕРВЕР ---
 async def handle(request):
     return web.Response(text="Bot is running")
 
@@ -194,20 +269,17 @@ async def start_web_server():
     await site.start()
     print(f"Web server started on port {port}")
 
-# --- КОРРЕКТНОЕ ЗАВЕРШЕНИЕ РАБОТЫ ---
+# --- ЗАВЕРШЕНИЕ ---
 async def on_shutdown():
-    print("Получен сигнал завершения, закрываем сессию бота...")
     await bot.session.close()
     sys.exit(0)
 
-# --- ГЛАВНАЯ ФУНКЦИЯ ---
+# --- ГЛАВНАЯ ---
 async def main():
     init_db()
-    
-    # ВАЖНО: Очищаем возможные "висящие" соединения перед стартом
+    await set_commands()
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # Настройка обработки сигналов (чтобы Render мог корректно выключить бота)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: asyncio.create_task(on_shutdown()))

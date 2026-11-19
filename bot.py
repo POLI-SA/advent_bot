@@ -105,6 +105,48 @@ async def process_subscribe(callback: CallbackQuery):
 
 
 
+
+from aiogram.filters import Command
+
+# --- КОМАНДА ДЛЯ ПРОСМОТРА БАЗЫ ---
+@dp.message(Command("users"))
+async def show_users(message: Message):
+    # Замените 123456789 на ваш реальный ID
+    ADMIN_ID = 7684212166 
+    if message.from_user.id != ADMIN_ID:
+        return  # Если пишет не админ — игнорируем
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Берем всех, кто подписан
+    cursor.execute("SELECT user_id, first_name, subscribed FROM users")
+    all_users = cursor.fetchall()
+    conn.close()
+
+    if not all_users:
+        await message.answer("База пуста. Никто еще не запускал бота.")
+        return
+
+    text = "📊 <b>Статистика базы:</b>\n\n"
+    count_sub = 0
+    
+    for u in all_users:
+        user_id, first_name, subscribed = u
+        status = "✅ Подписан" if subscribed == 1 else "❌ Не подписан"
+        if subscribed == 1:
+            count_sub += 1
+        text += f"• {first_name} (ID: <code>{user_id}</code>) — {status}\n"
+
+    text += f"\n<b>Всего в базе:</b> {len(all_users)}\n"
+    text += f"<b>Из них подписаны на рассылку:</b> {count_sub}"
+    
+    await message.answer(text, parse_mode="HTML")
+
+
+
+
+
+
 # --- РАССЫЛКА НАПОМИНАНИЙ ---
 async def daily_reminder():
     while True:

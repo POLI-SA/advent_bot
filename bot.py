@@ -1,43 +1,39 @@
 import asyncio
+import os
+from datetime import datetime, timedelta
+from aiohttp import web  # Добавляем веб-сервер
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import CommandStart
 
-# 1. ВСТАВЬТЕ ВАШ ТОКЕН (который выдал BotFather)
-BOT_TOKEN = "9285771934:AAF35GN7b0UAxN24KNTC6ZZX7SuQpcp4CJQ"
+# ... (ваш существующий код для BOT_TOKEN, WEB_APP_URL, CHAT_ID и т.д.) ...
 
-# 2. ВАША ССЫЛКА НА GITHUB PAGES
-WEB_APP_URL = "https://poli-sa.github.io/advent-calendar/"
+# --- ВАШ СУЩЕСТВУЮЩИЙ КОД БОТА (start_cmd, daily_reminder) ---
+# ...
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# --- НОВЫЙ БЛОК: ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+async def handle(request):
+    return web.Response(text="Bot is running")
 
-@dp.message(CommandStart())
-async def start_cmd(message: Message):
-    # Создаем кнопку, которая откроет Mini App
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🎁 Открыть Адвент-календарь", 
-                    web_app=WebAppInfo(url=WEB_APP_URL)
-                )
-            ]
-        ]
-    )
-    
-    # Отправляем текст и кнопку
-    await message.answer(
-        "🎄 <b>Привет!</b>\n\n"
-        "Добро пожаловать в наш новогодний адвент-календарь.\n"
-        "Каждый день открывай новое окошко с подарком!\n\n"
-        "Нажми на кнопку ниже, чтобы начать:",
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render передает порт через переменную окружения PORT
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Web server started on port {port}")
 
 async def main():
-    print("Бот запущен...")
+    # Запускаем веб-сервер для Render
+    asyncio.create_task(start_web_server())
+    
+    # Запускаем фоновую задачу для напоминаний
+    asyncio.create_task(daily_reminder())
+    
+    print("Bot and web server are running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

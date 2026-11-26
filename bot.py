@@ -18,7 +18,6 @@ from google.oauth2.service_account import Credentials
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://poli-sa.github.io/advent-calendar/")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET", "3"))
 APP_TZ = timezone(timedelta(hours=TZ_OFFSET))
 
@@ -31,29 +30,27 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Переменные для кэша в памяти (чтобы не дергать Google API лишний раз)
+# 🔴 ВАШ TELEGRAM ID ДЛЯ АДМИН-ДОСТУПА 🔴
+ADMIN_ID = 7684212166  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ID, ЕСЛИ ОН ДРУГОЙ
+
+# Переменные для кэша
 user_ids = set()
 sent_24_year = None
 sent_25_year = None
 
 # --- РАБОТА С GOOGLE ТАБЛИЦЕЙ ---
 def get_sheet():
-    """Авторизуется в Google и возвращает первый лист таблицы."""
     if not GOOGLE_CREDENTIALS or not SPREADSHEET_ID:
         raise ValueError("Не заданы GOOGLE_CREDENTIALS или SPREADSHEET_ID")
         
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds_dict = json.loads(GOOGLE_CREDENTIALS)
-    
-    # Исправляем переносы строк в приватном ключе (частая проблема на Render)
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).sheet1
 
 async def load_users_from_sheet():
-    """Загружает ID пользователей из таблицы при старте бота."""
     global user_ids
     try:
         sheet = get_sheet()
@@ -70,18 +67,15 @@ async def load_users_from_sheet():
         print(f"⚠️ Ошибка загрузки из таблицы: {e}")
 
 async def save_user_to_sheet(user_id, name):
-    """Добавляет нового пользователя или обновляет имя/дату у существующего."""
     try:
         sheet = get_sheet()
         cell = sheet.find(str(user_id), in_column=1)
         now_str = datetime.now(APP_TZ).strftime("%Y-%m-%d %H:%M")
         
         if cell:
-            # Пользователь уже есть, обновляем имя и дату последнего визита
             sheet.update_cell(cell.row, 2, name)
             sheet.update_cell(cell.row, 5, now_str)
         else:
-            # Новый пользователь — добавляем строку
             sheet.append_row([user_id, name, "", "", now_str])
             
         user_ids.add(user_id)
@@ -89,7 +83,6 @@ async def save_user_to_sheet(user_id, name):
         print(f"⚠️ Ошибка сохранения пользователя {user_id}: {e}")
 
 async def save_rating_to_sheet(user_id, score=None, comment=None):
-    """Сохраняет оценку и/или комментарий пользователя."""
     try:
         sheet = get_sheet()
         cell = sheet.find(str(user_id), in_column=1)
@@ -99,12 +92,10 @@ async def save_rating_to_sheet(user_id, score=None, comment=None):
             if comment is not None:
                 sheet.update_cell(cell.row, 4, comment)
         else:
-            # Если пользователя нет в таблице (например, написал отзыв без старта), создаем строку
             now_str = datetime.now(APP_TZ).strftime("%Y-%m-%d %H:%M")
             sheet.append_row([user_id, "Неизвестный", score or "", comment or "", now_str])
     except Exception as e:
         print(f"⚠️ Ошибка сохранения оценки {user_id}: {e}")
-
 
 # --- ЛОГИКА БОТА ---
 def is_calendar_closed(now: datetime | None = None) -> bool:
@@ -124,7 +115,6 @@ def build_dec24_keyboard() -> InlineKeyboardMarkup:
 
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
-    # Сохраняем пользователя в Google Таблицу
     await save_user_to_sheet(message.from_user.id, message.from_user.full_name)
 
     if is_calendar_closed():
@@ -158,19 +148,130 @@ async def handle_rating_callback(callback: CallbackQuery):
 
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_review_text(message: Message):
-    # Сохраняем текст как комментарий
     await save_rating_to_sheet(message.from_user.id, comment=message.text)
     await message.answer("💌 Спасибо за тёплый отзыв!")
 
-# --- РАССЫЛКИ ---
+# =========================================================
+# 🛠 АДМИН-ПАНЕЛЬ И ТЕСТОВЫЕ КОМАНДЫ
+# =========================================================
+
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+@dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    if not is_admin(message.from_user.id):
+        return  # Игнорируем, если пишет не админ
+    
+    await message.answer(
+        "👑 <b>Админ-панель</b>\n\n"
+        "Доступные команды:\n"
+        "/stats — статистика по пользователям и оценкам\n"
+        "/test_24 — тест рассылки 24 декабря (придет вам)\n"
+        "/test_25 — тест рассылки 25 декабря (придет вам)\n"
+        "/broadcast_24 — <b>ОТПРАВИТЬ ВСЕМ</b> сообщение 24 декабря прямо сейчас\n"
+        "/broadcast_25 — <b>ОТПРАВИТЬ ВСЕМ</b> сообщение 25 декабря прямо сейчас",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("stats"))
+async def admin_stats(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    await load_users_from_sheet()
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        total_rated = 0
+        sum_scores = 0
+        for row in records:
+            if "score" in row and str(row["score"]).isdigit():
+                total_rated += 1
+                sum_scores += int(row["score"])
+                
+        avg = sum_scores / total_rated if total_rated > 0 else 0.0
+        
+        await message.answer(
+            f"📈 <b>Статистика</b>\n\n"
+            f"👥 Всего пользователей: <b>{len(user_ids)}</b>\n"
+            f"⭐ Оценили календарь: <b>{total_rated}</b>\n"
+            f"🏆 Средняя оценка: <b>{avg:.2f} / 5</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"Ошибка при получении статистики: {e}")
+
+@dp.message(Command("test_24"))
+async def admin_test_24(message: Message):
+    if not is_admin(message.from_user.id): return
+    
+    text = "🎄 <b>Сегодня 24 декабря — финальный день!</b>\n\nСпасибо, что были с нами! ✨\nОцените календарь:"
+    await message.answer(
+        text,
+        reply_markup=build_dec24_keyboard(),
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("test_25"))
+async def admin_test_25(message: Message):
+    if not is_admin(message.from_user.id): return
+    
+    text = "❄️ <b>С Рождеством и наступающим Новым годом!</b>\n\nАдвент-календарь закрыт. Увидимся в следующем году! 🎄✨"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("broadcast_24"))
+async def admin_broadcast_24(message: Message):
+    if not is_admin(message.from_user.id): return
+    
+    await message.answer("⏳ Начинаю рассылку 24 декабря для всех из таблицы...")
+    await load_users_from_sheet()
+    
+    success = 0
+    failed = 0
+    text = "🎄 <b>Сегодня 24 декабря — финальный день!</b>\n\nСпасибо, что были с нами! ✨\nОцените календарь:"
+    
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text, reply_markup=build_dec24_keyboard(), parse_mode="HTML")
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+            
+    await message.answer(f"✅ Рассылка 24 декабря завершена.\nУспешно: {success}\nОшибок: {failed}")
+
+@dp.message(Command("broadcast_25"))
+async def admin_broadcast_25(message: Message):
+    if not is_admin(message.from_user.id): return
+    
+    await message.answer("⏳ Начинаю рассылку 25 декабря для всех из таблицы...")
+    await load_users_from_sheet()
+    
+    success = 0
+    failed = 0
+    text = "❄️ <b>С Рождеством и наступающим Новым годом!</b>\n\nАдвент-календарь закрыт. Увидимся в следующем году! 🎄✨"
+    
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+            
+    await message.answer(f"✅ Рассылка 25 декабря завершена.\nУспешно: {success}\nОшибок: {failed}")
+
+
+# --- АВТОМАТИЧЕСКИЕ РАССЫЛКИ ---
 async def send_dec24_reminder():
-    await load_users_from_sheet() # Обновляем список перед рассылкой
+    await load_users_from_sheet()
     print(f"Рассылка 24 декабря для {len(user_ids)} пользователей...")
     text = "🎄 <b>Сегодня 24 декабря — финальный день!</b>\n\nСпасибо, что были с нами! ✨\nОцените календарь:"
     for uid in user_ids:
         try:
             await bot.send_message(uid, text, reply_markup=build_dec24_keyboard(), parse_mode="HTML")
-            await asyncio.sleep(0.05) # Защита от блокировки Telegram
+            await asyncio.sleep(0.05)
         except Exception:
             pass
 
@@ -219,8 +320,6 @@ async def on_shutdown():
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Загружаем пользователей при старте
     await load_users_from_sheet()
 
     loop = asyncio.get_running_loop()
@@ -230,7 +329,7 @@ async def main():
     asyncio.create_task(start_web_server())
     asyncio.create_task(calendar_scheduler_loop())
 
-    print("🚀 Бот запущен с Google Sheets!")
+    print("🚀 Бот запущен с Google Sheets и Админ-панелью!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
